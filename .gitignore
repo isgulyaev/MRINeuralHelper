@@ -3,3 +3,4 @@ venv/
 .idea/
 poetry.lock
 dataset/*
+__pycache__/

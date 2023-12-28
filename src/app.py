@@ -1,195 +1,61 @@
 import sys
 
-from PyQt6.QtCore import QSize, Qt, QRect
-from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QGridLayout, QHBoxLayout, QGroupBox, QComboBox, QLabel, QDialog
+from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QWidget, QGridLayout, QGroupBox, QComboBox, QLabel
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 import plotly.graph_objects as go
-import numpy as np
 
-import nibabel as nib
-import os
-import albumentations as alb
+from src.utils import ImageReader, ImageViewer3d
+from src import constants, models
 
 
-def generate_3d_scatter(
-    x: np.array, y: np.array, z: np.array, colors: np.array,
-    size: int = 3, opacity: float = 0.2, scale: str = 'Teal',
-    hover: str = 'skip', name: str = 'MRI'
-) -> go.Scatter3d:
+class DatasetMenu(QWidget):
 
-    return go.Scatter3d(
-        x=x, y=y, z=z,
-        mode='markers', hoverinfo=hover,
-        marker=dict(
-            size=size, opacity=opacity,
-            color=colors, colorscale=scale
-        ),
-        name=name
-    )
-
-
-class ImageReader:
-    def __init__(
-            self, root: str, img_size: int = 256,
-            normalize: bool = False, single_class: bool = False
-    ) -> None:
-
-        pad_size = 256 if img_size > 256 else 224
-        self.resize = alb.Compose(
-            [
-                alb.PadIfNeeded(min_height=pad_size, min_width=pad_size, value=0),
-                alb.Resize(img_size, img_size)
-            ]
-        )
-        self.normalize = normalize
-        self.single_class = single_class
-        self.root = root
-
-    def read_file(self, path: str) -> dict:
-        scan_type = path.split('_')[-1]
-        raw_image = nib.load(path).get_fdata()
-        raw_mask = nib.load(path.replace(scan_type, 'seg.nii.gz')).get_fdata()
-        processed_frames, processed_masks = [], []
-        for frame_idx in range(raw_image.shape[2]):
-            frame = raw_image[:, :, frame_idx]
-            mask = raw_mask[:, :, frame_idx]
-            resized = self.resize(image=frame, mask=mask)
-            processed_frames.append(resized['image'])
-            processed_masks.append(
-                1 * (resized['mask'] > 0) if self.single_class else resized['mask']
-            )
-        scan_data = np.stack(processed_frames, 0)
-        if self.normalize:
-            if scan_data.max() > 0:
-                scan_data = scan_data / scan_data.max()
-            scan_data = scan_data.astype(np.float32)
-        return {
-            'scan': scan_data,
-            'segmentation': np.stack(processed_masks, 0),
-            'orig_shape': raw_image.shape
-        }
-
-    def load_patient_scan(self, idx: int, scan_type: str = 'flair') -> dict:
-        patient_id = str(idx).zfill(5)
-        scan_filename = f'{self.root}/training/BraTS2021_{patient_id}/BraTS2021_{patient_id}_{scan_type}.nii.gz'
-        return self.read_file(scan_filename)
-
-
-class ImageViewer3d:
-    def __init__(
-        self, reader: ImageReader,
-        mri_downsample: int = 10, mri_colorscale: str = 'Ice'
-    ) -> None:
-        self.reader = reader
-        self.mri_downsample = mri_downsample
-        self.mri_colorscale = mri_colorscale
-
-    def load_clean_mri(self, image: np.array, orig_dim: int) -> dict:
-        shape_offset = image.shape[1] / orig_dim
-        z, x, y = (image > 0).nonzero()
-        # only (1/mri_downsample) is sampled for the resulting image
-        x, y, z = x[::self.mri_downsample], y[::self.mri_downsample], z[::self.mri_downsample]
-        colors = image[z, x, y]
-        return dict(x=x / shape_offset, y=y / shape_offset, z=z, colors=colors)
-
-    def load_tumor_segmentation(self, image: np.array, orig_dim: int) -> dict:
-        tumors = {}
-        shape_offset = image.shape[1] / orig_dim
-        # 1/1, 1/3 and 1/5 pixels for tumor tissue classes 1(core), 2(invaded) and 4(enhancing)
-        sampling = {
-            1: 1, 2: 3, 4: 5
-        }
-        for class_idx in sampling:
-            z, x, y = (image == class_idx).nonzero()
-            x, y, z = x[::sampling[class_idx]], y[::sampling[class_idx]], z[::sampling[class_idx]]
-            tumors[class_idx] = dict(
-                x=x / shape_offset, y=y / shape_offset, z=z,
-                colors=class_idx / 4
-            )
-        return tumors
-
-    def collect_patient_data(self, scan: dict) -> tuple:
-        clean_mri = self.load_clean_mri(scan['scan'], scan['orig_shape'][0])
-        tumors = self.load_tumor_segmentation(scan['segmentation'], scan['orig_shape'][0])
-        markers_created = clean_mri['x'].shape[0] + sum(tumors[class_idx]['x'].shape[0] for class_idx in tumors)
-        return [
-            generate_3d_scatter(
-                **clean_mri, scale=self.mri_colorscale, opacity=0.4,
-                hover='skip', name='Brain MRI'
-            ),
-            generate_3d_scatter(
-                **tumors[1], opacity=0.8,
-                hover='all', name='Necrotic tumor core'
-            ),
-            generate_3d_scatter(
-                **tumors[2], opacity=0.4,
-                hover='all', name='Peritumoral invaded tissue'
-            ),
-            generate_3d_scatter(
-                **tumors[4], opacity=0.4,
-                hover='all', name='GD-enhancing tumor'
-            ),
-        ], markers_created
-
-    def get_3d_scan(self, patient_idx: int, scan_type: str = 'flair') -> go.Figure:
-        scan = self.reader.load_patient_scan(patient_idx, scan_type)
-        data, num_markers = self.collect_patient_data(scan)
-        fig = go.Figure(data=data)
-        fig.update_layout(
-            title=f"[Patient id:{patient_idx}] brain MRI scan ({num_markers} points)",
-            legend_title="Pixel class (click to enable/disable)",
-            font=dict(
-                family="Courier New, monospace",
-                size=14,
-            ),
-            margin=dict(
-                l=0, r=0, b=0, t=50
-            ),
-            legend=dict(itemsizing='constant')
-        )
-        return fig
-
-
-class AnotherWindow(QWidget):
-    """
-    This "window" is a QWidget. If it has no parent, it
-    will appear as a free-floating window as we want.
-    """
-    def __init__(self):
+    def __init__(self, localization: models.DatasetMenuNaming):
         super().__init__()
         self.dlg_layout = QGridLayout()
-        self.setFixedSize(400, 300)
-        self.setWindowTitle('Список датасетов')
+        self.setFixedSize(*constants.DATASET_RESOLUTION)
 
-        brats_2020_btn = QPushButton('BraTS 2020 - 8 GB')
-        brats_2021_btn = QPushButton('BraTS 2021 - 13,7 GB')
+        self.localization = None
 
-        self.dlg_layout.addWidget(brats_2020_btn, 0, 0)
-        self.dlg_layout.addWidget(brats_2021_btn, 1, 0)
+        pos = 0
+        for key, value in constants.DATASET_INFO.items():
+            dataset_button = QPushButton(f'{value.name} - {value.size} GB')
+            self.dlg_layout.addWidget(dataset_button, pos, 0)
+            pos += 1
 
         self.setLayout(self.dlg_layout)
 
+        self.set_localization(localization)
+        self.set_naming()
+
+    def set_naming(self):
+        self.setWindowTitle(self.localization.window_name)
+
+    def set_localization(self, localization: models.DatasetMenuNaming):
+        self.localization = localization
+
 
 class MainWindow(QMainWindow):
-    def __init__(self, path):
+    def __init__(self, path: str, localization: models.Localization = constants.LOCALIZATION.get('EN')):
         super().__init__()
+
+        self.localization = localization
 
         self.path = path
 
         self.reader = ImageReader(self.path, img_size=128, normalize=True, single_class=False)
         self.viewer = ImageViewer3d(self.reader, mri_downsample=20)
 
-        self.setWindowTitle("MRI Neural Helper")
-        self.setFixedSize(QSize(1280, 720))
+        self.setFixedSize(*constants.MAIN_RESOLUTION)
 
         self.main_layout = QGridLayout()
 
-        self.menu_group = QGroupBox('Меню управления')
-        self.dataset_group = QGroupBox('Параметры датасета')
-        self.config_group = QGroupBox('Конфигуратор')
-        self.manipulate_group = QGroupBox('Стартовые операции')
-        self.graph_group = QGroupBox('Результат')
+        self.menu_group = QGroupBox()
+        self.dataset_group = QGroupBox()
+        self.config_group = QGroupBox()
+        self.manipulate_group = QGroupBox()
+        self.graph_group = QGroupBox()
 
         self.menu_layout = QGridLayout()
         self.dataset_layout = QGridLayout()
@@ -197,19 +63,18 @@ class MainWindow(QMainWindow):
         self.manipulate_layout = QGridLayout()
         self.graph_layout = QGridLayout()
 
-        self.open_dataset_button = QPushButton('Открыть датасет')
-        self.download_dataset_button = QPushButton('Загрузить датасет')
+        self.open_dataset_button = QPushButton()
+        self.download_dataset_button = QPushButton()
         self.dataset_layout.addWidget(self.open_dataset_button, 0, 0)
         self.dataset_layout.addWidget(self.download_dataset_button, 1, 0)
 
-        self.open_config_button = QPushButton('Открыть конфигурацию')
-        self.save_config_button = QPushButton('Сохранить конфигурацию')
-        self.mode = QLabel('Выбор режима работы')
+        self.open_config_button = QPushButton()
+        self.save_config_button = QPushButton()
+        self.mode = QLabel()
         self.mode_picker = QComboBox()
-        self.mode_picker.addItems(['Одиночный режим', 'Обучение / Тестирование', 'Тестирование'])
-        self.segmentator = QLabel('Выбор сегментатора')
+        self.segmentator = QLabel()
         self.neuro_picker = QComboBox()
-        self.neuro_picker.addItems(['U-Net', 'BiTr-Unet', 'Custom U-Net'])
+        self.neuro_picker.addItems(constants.segmentators)
         self.config_layout.addWidget(self.open_config_button, 0, 0)
         self.config_layout.addWidget(self.save_config_button, 1, 0, 2, 0)
         self.config_layout.addWidget(self.mode, 3, 0)
@@ -217,8 +82,8 @@ class MainWindow(QMainWindow):
         self.config_layout.addWidget(self.segmentator, 5, 0)
         self.config_layout.addWidget(self.neuro_picker, 6, 0)
 
-        self.plot_button = QPushButton('Запуск')
-        self.manipulate_layout.addWidget(self.plot_button, 0, 0)
+        self.run_button = QPushButton()
+        self.manipulate_layout.addWidget(self.run_button, 0, 0)
 
         self.browser = QWebEngineView(self)
         self.graph_layout.addWidget(self.browser, 0, 0)
@@ -241,24 +106,64 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(layout)
 
         self.download_dataset_button.clicked.connect(self.download_list)
-        self.plot_button.clicked.connect(self.show_graph)
+        self.run_button.clicked.connect(self.show_graph)
 
         self.w = None
 
+        self.set_naming()
+
     def download_list(self):
         if self.w is None:
-            self.w = AnotherWindow()
+            self.w = DatasetMenu(self.localization.dataset_menu)
         self.w.show()
 
     def show_graph(self):
         fig = self.viewer.get_3d_scan(0, 't1')
         fig = go.Figure(fig)
+
         self.browser.setHtml(fig.to_html(include_plotlyjs='cdn'))
+
+    def set_naming(self):
+        self.setWindowTitle(self.localization.main_window.app_name)
+
+        self.menu_group.setTitle(self.localization.main_window.menu_group)
+        self.dataset_group.setTitle(self.localization.main_window.dataset_group)
+        self.config_group.setTitle(self.localization.main_window.config_group)
+        self.manipulate_group.setTitle(self.localization.main_window.manipulate_group)
+        self.graph_group.setTitle(self.localization.main_window.graph_group)
+
+        self.open_dataset_button.setText(self.localization.main_window.open_dataset_button)
+        self.download_dataset_button.setText(self.localization.main_window.download_dataset_button)
+
+        self.open_config_button.setText(self.localization.main_window.open_config_button)
+        self.save_config_button.setText(self.localization.main_window.save_config_button)
+        self.mode.setText(self.localization.main_window.mode)
+
+        self.mode_picker.clear()
+        self.mode_picker.addItems(
+            [
+                self.localization.main_window.single_mode,
+                self.localization.main_window.train_validate_mode,
+                self.localization.main_window.test_mode
+            ]
+        )
+
+        self.segmentator.setText(self.localization.main_window.segmentator)
+
+        self.run_button.setText(self.localization.main_window.run_button)
+
+        if self.w:
+            self.w.set_naming()
+
+    def change_localization(self, language: str):
+        if self.localization.language != language:
+            self.localization = constants.LOCALIZATION.get(language)
+            self.set_naming()
 
 
 app = QApplication(sys.argv)
 
-window = MainWindow(path='./dataset')
+window = MainWindow(path='../dataset')
 window.show()
 
 app.exec()
