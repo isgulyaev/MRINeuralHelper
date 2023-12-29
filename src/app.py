@@ -5,165 +5,213 @@ from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 import plotly.graph_objects as go
 
-from src.utils import ImageReader, ImageViewer3d
-from src import constants, models
+from src import constants, models, interfaces, utils
 
 
-class DatasetMenu(QWidget):
+class URLButton(QPushButton):
 
-    def __init__(self, localization: models.DatasetMenuNaming):
+    def __init__(self, *args):
+        super().__init__(*args)
+
+        self._url = None
+
+    def get_url(self) -> str:
+        print(self._url)
+
+        return self._url
+
+    def set_url(self, url: str):
+        self._url = url
+
+
+class DatasetMenu(interfaces.Window, QWidget):
+
+    def __init__(self, localization: models.Localization = constants.LOCALIZATION.get('EN')):
         super().__init__()
-        self.dlg_layout = QGridLayout()
-        self.setFixedSize(*constants.DATASET_RESOLUTION)
 
-        self.localization = None
+        self._dlg_layout = QGridLayout()
+        self._localization = localization
+        self._dataset_buttons = {}
 
-        pos = 0
-        for key, value in constants.DATASET_INFO.items():
-            dataset_button = QPushButton(f'{value.name} - {value.size} GB')
-            self.dlg_layout.addWidget(dataset_button, pos, 0)
-            pos += 1
+        self._is_configured = False
+        self.configure()
 
-        self.setLayout(self.dlg_layout)
+    def configure(self):
+        if not self._is_configured:
+            self.setFixedSize(*constants.DATASET_RESOLUTION)
 
-        self.set_localization(localization)
-        self.set_naming()
+            pos = 0
+            for key, value in constants.DATASET_INFO.items():
+                button = URLButton(f'{value.name} - {value.size} GB')
+                button.set_url(url=value.url)
+                button.clicked.connect(button.get_url)
 
-    def set_naming(self):
-        self.setWindowTitle(self.localization.window_name)
+                self._dataset_buttons[key] = button
+                self._dlg_layout.addWidget(button, pos, 0)
 
-    def set_localization(self, localization: models.DatasetMenuNaming):
-        self.localization = localization
+                pos += 1
+
+            self._set_position()
+            self._set_naming()
+
+            self._is_configured = True
+
+    def change_localization(self, language: str):
+        if self._localization.language != language:
+            self._localization = constants.LOCALIZATION.get(language)
+            self._set_naming()
+
+    def _set_position(self):
+        self.setLayout(self._dlg_layout)
+
+    def _set_naming(self):
+        self.setWindowTitle(self._localization.dataset_menu.window_name)
 
 
-class MainWindow(QMainWindow):
+class MainWindow(interfaces.Window, QMainWindow):
+
     def __init__(self, path: str, localization: models.Localization = constants.LOCALIZATION.get('EN')):
         super().__init__()
 
-        self.localization = localization
+        self._localization = localization
+        self._path = path
 
-        self.path = path
+        self._reader = utils.ImageReader(self._path, img_size=128, normalize=True, single_class=False)
+        self._viewer = utils.ImageViewer(self._reader, mri_downsample=20)
 
-        self.reader = ImageReader(self.path, img_size=128, normalize=True, single_class=False)
-        self.viewer = ImageViewer3d(self.reader, mri_downsample=20)
+        self._menu_group = QGroupBox()
+        self._dataset_group = QGroupBox()
+        self._config_group = QGroupBox()
+        self._manipulate_group = QGroupBox()
+        self._graph_group = QGroupBox()
 
-        self.setFixedSize(*constants.MAIN_RESOLUTION)
+        self._main_layout = QGridLayout()
+        self._menu_layout = QGridLayout()
+        self._dataset_layout = QGridLayout()
+        self._config_layout = QGridLayout()
+        self._manipulate_layout = QGridLayout()
+        self._graph_layout = QGridLayout()
 
-        self.main_layout = QGridLayout()
+        self._open_dataset_button = QPushButton()
+        self._download_dataset_button = QPushButton()
+        self._open_config_button = QPushButton()
+        self._save_config_button = QPushButton()
+        self._run_button = QPushButton()
 
-        self.menu_group = QGroupBox()
-        self.dataset_group = QGroupBox()
-        self.config_group = QGroupBox()
-        self.manipulate_group = QGroupBox()
-        self.graph_group = QGroupBox()
+        self._mode = QLabel()
+        self._segmentator = QLabel()
 
-        self.menu_layout = QGridLayout()
-        self.dataset_layout = QGridLayout()
-        self.config_layout = QGridLayout()
-        self.manipulate_layout = QGridLayout()
-        self.graph_layout = QGridLayout()
+        self._mode_picker = QComboBox()
+        self._neuro_picker = QComboBox()
 
-        self.open_dataset_button = QPushButton()
-        self.download_dataset_button = QPushButton()
-        self.dataset_layout.addWidget(self.open_dataset_button, 0, 0)
-        self.dataset_layout.addWidget(self.download_dataset_button, 1, 0)
+        self._browser = QWebEngineView(self)
 
-        self.open_config_button = QPushButton()
-        self.save_config_button = QPushButton()
-        self.mode = QLabel()
-        self.mode_picker = QComboBox()
-        self.segmentator = QLabel()
-        self.neuro_picker = QComboBox()
-        self.neuro_picker.addItems(constants.segmentators)
-        self.config_layout.addWidget(self.open_config_button, 0, 0)
-        self.config_layout.addWidget(self.save_config_button, 1, 0, 2, 0)
-        self.config_layout.addWidget(self.mode, 3, 0)
-        self.config_layout.addWidget(self.mode_picker, 4, 0)
-        self.config_layout.addWidget(self.segmentator, 5, 0)
-        self.config_layout.addWidget(self.neuro_picker, 6, 0)
+        self._dataset_picker = None
 
-        self.run_button = QPushButton()
-        self.manipulate_layout.addWidget(self.run_button, 0, 0)
+        self._is_configured = False
+        self.configure()
 
-        self.browser = QWebEngineView(self)
-        self.graph_layout.addWidget(self.browser, 0, 0)
+    def configure(self):
+        if not self._is_configured:
+            self.setFixedSize(*constants.MAIN_RESOLUTION)
 
-        self.menu_group.setLayout(self.menu_layout)
-        self.dataset_group.setLayout(self.dataset_layout)
-        self.config_group.setLayout(self.config_layout)
-        self.manipulate_group.setLayout(self.manipulate_layout)
-        self.graph_group.setLayout(self.graph_layout)
+            self._menu_group.setLayout(self._menu_layout)
+            self._dataset_group.setLayout(self._dataset_layout)
+            self._config_group.setLayout(self._config_layout)
+            self._manipulate_group.setLayout(self._manipulate_layout)
+            self._graph_group.setLayout(self._graph_layout)
 
-        self.menu_layout.addWidget(self.dataset_group, 0, 0)
-        self.menu_layout.addWidget(self.config_group, 1, 0, 2, 0)
-        self.menu_layout.addWidget(self.manipulate_group, 3, 0)
+            layout = QWidget()
+            layout.setLayout(self._main_layout)
+            self.setCentralWidget(layout)
 
-        self.main_layout.addWidget(self.menu_group, 0, 0)
-        self.main_layout.addWidget(self.graph_group, 0, 1, 0, 5)
+            self._set_position()
+            self._set_events()
+            self._set_naming()
 
-        layout = QWidget()
-        layout.setLayout(self.main_layout)
-        self.setCentralWidget(layout)
+            self._is_configured = True
 
-        self.download_dataset_button.clicked.connect(self.download_list)
-        self.run_button.clicked.connect(self.show_graph)
+    def change_localization(self, language: str):
+        if self._localization.language != language:
+            self._localization = constants.LOCALIZATION.get(language)
+            self._set_naming()
 
-        self.w = None
-
-        self.set_naming()
+            self._dataset_picker.change_localization(self._localization)
 
     def download_list(self):
-        if self.w is None:
-            self.w = DatasetMenu(self.localization.dataset_menu)
-        self.w.show()
+        if self._dataset_picker is None:
+            self._dataset_picker = DatasetMenu(self._localization)
+        self._dataset_picker.show()
 
     def show_graph(self):
-        fig = self.viewer.get_3d_scan(0, 't1')
+        fig = self._viewer.get_3d_scan(0, 't1')
         fig = go.Figure(fig)
 
-        self.browser.setHtml(fig.to_html(include_plotlyjs='cdn'))
+        self._browser.setHtml(fig.to_html(include_plotlyjs='cdn'))
 
-    def set_naming(self):
-        self.setWindowTitle(self.localization.main_window.app_name)
+    def _set_position(self):
+        self._dataset_layout.addWidget(self._open_dataset_button, 0, 0)
+        self._dataset_layout.addWidget(self._download_dataset_button, 1, 0)
 
-        self.menu_group.setTitle(self.localization.main_window.menu_group)
-        self.dataset_group.setTitle(self.localization.main_window.dataset_group)
-        self.config_group.setTitle(self.localization.main_window.config_group)
-        self.manipulate_group.setTitle(self.localization.main_window.manipulate_group)
-        self.graph_group.setTitle(self.localization.main_window.graph_group)
+        self._config_layout.addWidget(self._open_config_button, 0, 0)
+        self._config_layout.addWidget(self._save_config_button, 1, 0, 2, 0)
+        self._config_layout.addWidget(self._mode, 3, 0)
+        self._config_layout.addWidget(self._mode_picker, 4, 0)
+        self._config_layout.addWidget(self._segmentator, 5, 0)
+        self._config_layout.addWidget(self._neuro_picker, 6, 0)
 
-        self.open_dataset_button.setText(self.localization.main_window.open_dataset_button)
-        self.download_dataset_button.setText(self.localization.main_window.download_dataset_button)
+        self._manipulate_layout.addWidget(self._run_button, 0, 0)
 
-        self.open_config_button.setText(self.localization.main_window.open_config_button)
-        self.save_config_button.setText(self.localization.main_window.save_config_button)
-        self.mode.setText(self.localization.main_window.mode)
+        self._graph_layout.addWidget(self._browser, 0, 0)
 
-        self.mode_picker.clear()
-        self.mode_picker.addItems(
+        self._menu_layout.addWidget(self._dataset_group, 0, 0)
+        self._menu_layout.addWidget(self._config_group, 1, 0, 2, 0)
+        self._menu_layout.addWidget(self._manipulate_group, 3, 0)
+
+        self._main_layout.addWidget(self._menu_group, 0, 0)
+        self._main_layout.addWidget(self._graph_group, 0, 1, 0, 5)
+
+    def _set_events(self):
+        self._download_dataset_button.clicked.connect(self.download_list)
+        self._run_button.clicked.connect(self.show_graph)
+
+    def _set_naming(self):
+        self.setWindowTitle(self._localization.main_window.app_name)
+
+        self._menu_group.setTitle(self._localization.main_window.menu_group)
+        self._dataset_group.setTitle(self._localization.main_window.dataset_group)
+        self._config_group.setTitle(self._localization.main_window.config_group)
+        self._manipulate_group.setTitle(self._localization.main_window.manipulate_group)
+        self._graph_group.setTitle(self._localization.main_window.graph_group)
+
+        self._open_dataset_button.setText(self._localization.main_window.open_dataset_button)
+        self._download_dataset_button.setText(self._localization.main_window.download_dataset_button)
+
+        self._open_config_button.setText(self._localization.main_window.open_config_button)
+        self._save_config_button.setText(self._localization.main_window.save_config_button)
+        self._mode.setText(self._localization.main_window.mode)
+
+        self._mode_picker.clear()
+        self._mode_picker.addItems(
             [
-                self.localization.main_window.single_mode,
-                self.localization.main_window.train_validate_mode,
-                self.localization.main_window.test_mode
+                self._localization.main_window.single_mode,
+                self._localization.main_window.train_validate_mode,
+                self._localization.main_window.test_mode
             ]
         )
 
-        self.segmentator.setText(self.localization.main_window.segmentator)
+        self._neuro_picker.clear()
+        self._neuro_picker.addItems(constants.segmentators)
 
-        self.run_button.setText(self.localization.main_window.run_button)
+        self._segmentator.setText(self._localization.main_window.segmentator)
 
-        if self.w:
-            self.w.set_naming()
-
-    def change_localization(self, language: str):
-        if self.localization.language != language:
-            self.localization = constants.LOCALIZATION.get(language)
-            self.set_naming()
+        self._run_button.setText(self._localization.main_window.run_button)
 
 
-app = QApplication(sys.argv)
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
 
-window = MainWindow(path='../dataset')
-window.show()
+    window = MainWindow(path='../dataset')
+    window.show()
 
-app.exec()
+    app.exec()

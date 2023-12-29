@@ -4,7 +4,7 @@ from src import models
 DATASET_FOLDER = './dataset'
 DATASET_INFO = {
     1: models.Dataset(name='BraTS 2020', url='BraTS 2020', size=8),
-    2: models.Dataset(name='BraTS 2021', url='BraTS 2020', size=13.7)
+    2: models.Dataset(name='BraTS 2021', url='BraTS 2021', size=13.7)
 }
 
 MAIN_RESOLUTION = (1280, 720)
