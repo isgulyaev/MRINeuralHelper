@@ -92,9 +92,7 @@ class ImageViewer:
     def load_tumor_segmentation(self, image: np.array, orig_dim: int) -> dict:
         tumors = {}
         shape_offset = image.shape[1] / orig_dim
-        sampling = {
-            1: 1, 2: 3, 4: 5
-        }
+        sampling = {1: 1, 2: 3, 4: 5}
 
         for class_idx in sampling:
             z, x, y = (image == class_idx).nonzero()

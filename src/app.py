@@ -1,6 +1,8 @@
+import os
 import sys
 
-from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QWidget, QGridLayout, QGroupBox, QComboBox, QLabel
+from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QWidget, QGridLayout, QGroupBox, QComboBox, QLabel, \
+    QFileDialog, QLineEdit, QSizePolicy
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 import plotly.graph_objects as go
@@ -70,13 +72,14 @@ class DatasetMenu(interfaces.Window, QWidget):
 
 class MainWindow(interfaces.Window, QMainWindow):
 
-    def __init__(self, path: str, localization: models.Localization = constants.LOCALIZATION.get('EN')):
+    def __init__(self, localization: models.Localization = constants.LOCALIZATION.get('EN')):
         super().__init__()
 
         self._localization = localization
-        self._path = path
+        self._path = None
+        self._model = None
 
-        self._reader = utils.ImageReader(self._path, img_size=128, normalize=True, single_class=False)
+        self._reader = utils.ImageReader('../dataset', img_size=128, normalize=True, single_class=False)
         self._viewer = utils.ImageViewer(self._reader, mri_downsample=20)
 
         self._menu_group = QGroupBox()
@@ -97,6 +100,10 @@ class MainWindow(interfaces.Window, QMainWindow):
         self._open_config_button = QPushButton()
         self._save_config_button = QPushButton()
         self._run_button = QPushButton()
+
+        self._size_policy = QSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+
+        self._patient_id = QLineEdit()
 
         self._mode = QLabel()
         self._segmentator = QLabel()
@@ -120,6 +127,10 @@ class MainWindow(interfaces.Window, QMainWindow):
             self._config_group.setLayout(self._config_layout)
             self._manipulate_group.setLayout(self._manipulate_layout)
             self._graph_group.setLayout(self._graph_layout)
+
+            self._patient_id.setSizePolicy(self._size_policy)
+            self._patient_id.setMaximumWidth(40)
+            self._patient_id.setMaxLength(4)
 
             layout = QWidget()
             layout.setLayout(self._main_layout)
@@ -149,16 +160,79 @@ class MainWindow(interfaces.Window, QMainWindow):
 
         self._browser.setHtml(fig.to_html(include_plotlyjs='cdn'))
 
+    def open_configuration(self):
+        configuration_dir = QFileDialog.getOpenFileName(
+            parent=self,
+            caption=self._localization.main_window.open_config_button,
+            directory=os.getenv('HOME'),
+            filter='All Files(*);;Text Files(*.txt)',
+        )
+
+        if configuration_dir:
+            self._model = configuration_dir
+            # TODO: create validate model service
+
+    def save_configuration(self):
+        if self._model is not None:
+            filename, _ = QFileDialog.getSaveFileName(
+                parent=self,
+                caption=self._localization.main_window.save_config_button,
+                directory=os.getenv('HOME'),
+                filter='All Files(*);;Text Files(*.txt)',
+            )
+
+            if filename:
+                with open(filename, 'w') as f:
+                    f.write(self._model)
+
+                self.setWindowTitle(f'{self._localization.main_window.app_name} - {filename}')
+
+    def run_button(self):
+        if self._path is None:
+            raise FileNotFoundError
+
+        if self._model is None:
+            self._model = self._neuro_picker.currentText()
+
+        if self._mode_picker.currentText() == self._localization.main_window.single_mode:
+            patient_id = self._patient_id.text()
+            if patient_id is None:
+                raise AttributeError
+            self.show_graph()
+        elif self._mode_picker.currentText() == self._localization.main_window.train_validate_mode:
+            pass
+        else:
+            pass
+
+    def select_path(self):
+        dataset_dir = QFileDialog.getExistingDirectory(
+            parent=self,
+            caption=self._localization.main_window.open_dataset_button,
+            directory=os.getenv('HOME'),
+            options=QFileDialog.Option.ShowDirsOnly,
+        )
+
+        if dataset_dir:
+            self._path = dataset_dir
+            # TODO: create validate dir service
+
+    def mode_changer(self):
+        if self._mode_picker.currentText() != self._localization.main_window.single_mode:
+            self._patient_id.setEnabled(False)
+        else:
+            self._patient_id.setEnabled(True)
+
     def _set_position(self):
         self._dataset_layout.addWidget(self._open_dataset_button, 0, 0)
         self._dataset_layout.addWidget(self._download_dataset_button, 1, 0)
 
-        self._config_layout.addWidget(self._open_config_button, 0, 0)
+        self._config_layout.addWidget(self._open_config_button, 0, 0, 1, 0)
         self._config_layout.addWidget(self._save_config_button, 1, 0, 2, 0)
         self._config_layout.addWidget(self._mode, 3, 0)
         self._config_layout.addWidget(self._mode_picker, 4, 0)
-        self._config_layout.addWidget(self._segmentator, 5, 0)
-        self._config_layout.addWidget(self._neuro_picker, 6, 0)
+        self._config_layout.addWidget(self._patient_id, 4, 1)
+        self._config_layout.addWidget(self._segmentator, 6, 0)
+        self._config_layout.addWidget(self._neuro_picker, 7, 0)
 
         self._manipulate_layout.addWidget(self._run_button, 0, 0)
 
@@ -172,8 +246,12 @@ class MainWindow(interfaces.Window, QMainWindow):
         self._main_layout.addWidget(self._graph_group, 0, 1, 0, 5)
 
     def _set_events(self):
+        self._open_dataset_button.clicked.connect(self.select_path)
         self._download_dataset_button.clicked.connect(self.download_list)
-        self._run_button.clicked.connect(self.show_graph)
+        self._open_config_button.clicked.connect(self.open_configuration)
+        self._save_config_button.clicked.connect(self.save_configuration)
+        self._mode_picker.currentTextChanged.connect(self.mode_changer)
+        self._run_button.clicked.connect(self.run_button)
 
     def _set_naming(self):
         self.setWindowTitle(self._localization.main_window.app_name)
@@ -211,7 +289,7 @@ class MainWindow(interfaces.Window, QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
 
-    window = MainWindow(path='../dataset')
+    window = MainWindow()
     window.show()
 
     app.exec()
